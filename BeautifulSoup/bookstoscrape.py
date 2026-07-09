@@ -15,7 +15,7 @@ for article in articles:
     dic['Title'] =article.h3.a.get('title')
     dic['Price']= article.find(class_="price_color").text
     dic['Availability']=article.find(class_='instock availability').text.strip()
-    dic['Link']= article.h3.a.get('href')
+    dic['Link']= baseurl+'/'+article.h3.a.get('href')
     result.append(dic)
 df = pd.DataFrame.from_records(result)
 df.to_csv('booksData.csv',index=False)
