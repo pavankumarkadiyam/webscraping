@@ -1,11 +1,16 @@
+
+#importing important libraries BeautifulSoup, Request module, pandas
 from bs4 import BeautifulSoup
 import requests as req
 import pandas as pd
 
 baseurl = 'https://books.toscrape.com'
+
+#making a callout
 result = req.get(baseurl)
 context = result.text
 
+#parsing the html content to dom format
 soup = BeautifulSoup(context,'lxml')
 section = soup.find('section')
 articles = section.find_all('article')
