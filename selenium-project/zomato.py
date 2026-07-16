@@ -1,6 +1,7 @@
 import requests
 import time
 import json
+import pandas as pd
 session = requests.Session()
 headers = {
     'accept': '*/*',
@@ -17,7 +18,7 @@ headers = {
     'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
 }
 
-r = session.get("https://www.zomato.com/Bengaluru", headers=headers)
+r = session.get("https://www.zomato.com/hyderabad", headers=headers)
 cookies = session.cookies.get_dict()
 print(cookies)
 
@@ -50,13 +51,13 @@ json_data = {
     # 'userDefinedLongitude': 77.594376,
     # 'entityName': 'Bengaluru',
     # 'orderLocationName': 'Bengaluru',
-    'cityName': 'Bengaluru',
+    'cityName': 'Hyderabad',
     'countryId': 1,
     'countryName': 'India',
     # 'displayTitle': 'Bengaluru',
     'o2Serviceable': True,
-    'placeId': '3655',
-    'cellId': '4300399395616063488',
+    'placeId': '9419',
+    'cellId': '4308704762854899712',
     # 'deliverySubzoneId': 9419,
     'placeType': 'DSZ',
     # 'placeName': 'Bengaluru',
@@ -69,10 +70,6 @@ json_data = {
 }
 
 def create_filter(searchMetadata):
-    postbackParams = json.loads(searchMetaData.get('postbackParams'))
-    postbackParams['search_id'] = None
-    searchMetaData['postbackParams'] = json.dumps(postbackParams)
-    print(searchMetaData)
     return {
         'searchMetadata':searchMetadata,
         'dineoutAdsMetaData':{},
@@ -104,48 +101,44 @@ def generate_json_data_filters(solr_offset,page,total_restaurants_shown,total_re
     }
 
 results = []
-count = 0
 response = session.post('https://www.zomato.com/webroutes/search/home', cookies=cookies, headers=new_headers, json=json_data)
 json_response = response.json()
-while json_response.get('sections').get('SECTION_SEARCH_META_INFO').get('searchMetaData').get('hasMore'):
-    count += 1
-    if response.status_code == 200:
-        SECTION_SEARCH_RESULT = json_response.get('sections').get('SECTION_SEARCH_RESULT')
-        results.extend([
-            {
-                'Type': result.get('type','N/A'),
-                'resId':result.get('info').get('resId'),
-                'Name':result.get('info').get('name')
 
-
-            }
-            for result in SECTION_SEARCH_RESULT
-        ])
-        searchMetaData = json_response.get('sections',{}).get('SECTION_SEARCH_META_INFO',{}).get('searchMetaData')
-        postbackParams = json.loads(searchMetaData.get('postbackParams'))
-        print(
-            f"page: {postbackParams.get('page','NR')} || "
-            f"Total Restaurants shown: {postbackParams.get('total_restaurants_shown','NR')} || "
-            f"Total Restaurants Scraped: {len(results)}"
-        )
-        json_data['filters'] = json.dumps(create_filter(searchMetaData))
-        if count%20 == 0:
-            session.close()
-            session= requests.Session()
-            r = session.get("https://www.zomato.com/Bengaluru", headers=headers)
-            cookies = session.cookies.get_dict()
-            if(new_headers['x-zomato-csrft'] == cookies.get('csrf')):
-                print(True)
-            else:
-                print(False)
-            new_headers['x-zomato-csrft'] = cookies.get('csrf')
-            # break
-            
-
+if response.status_code == 200:
+    while True:
         response = session.post('https://www.zomato.com/webroutes/search/home', cookies=cookies, headers=new_headers, json=json_data)
         json_response = response.json()
-        time.sleep(2)
-        if len(results) >= 1000:
-            break
-import pandas as pd
-pd.DataFrame(results).to_csv('results_.csv',index=False)
+        print(f"Status code: {response.status_code}")
+        if response.status_code == 200:
+            SECTION_SEARCH_RESULT = json_response.get('sections').get('SECTION_SEARCH_RESULT')
+            print(f'Section Result Length: {len(SECTION_SEARCH_RESULT)}')
+
+            results.extend([
+                {
+                    'Type': result.get('type','N/A'),
+                    'resId':result.get('info',{}).get('resId'),
+                    'Name':result.get('info',{}).get('name'),
+                    'Address': result.get('info',{}).get('locality',{}).get('address',"No Address found"),
+                    'Has fake reviews': result.get('info',{}).get('rating',{}).get('has_fake_reviews',0),
+                    'Rating':result.get('info',{}).get('rating',{}).get('aggregate_rating',0),
+                    'Votes':result.get('info',{}).get('rating',{}).get('votes',0),
+                    'Has Bulk Offers': result.get('bulkOffers',[])
+
+                }
+                for result in SECTION_SEARCH_RESULT
+            ])
+            searchMetaData = json_response.get('sections',{}).get('SECTION_SEARCH_META_INFO',{}).get('searchMetaData')
+            postbackParams = json.loads(searchMetaData.get('postbackParams'))
+            print(
+                f"page: {postbackParams.get('page','NR')} || "
+                f"Total Restaurants shown: {postbackParams.get('total_restaurants_shown','NR')} || "
+                f"Total Restaurants Scraped: {len(results)}"
+            )
+            json_data['filters'] = json.dumps(create_filter(searchMetaData))
+            time.sleep(1)
+            if len(SECTION_SEARCH_RESULT) == 0:
+                print(f"{len(results)} restaurants were scraped.")
+                break
+        pd.DataFrame(results).to_csv('results_.csv',index=False)
+else:
+    print(response.status_code)
