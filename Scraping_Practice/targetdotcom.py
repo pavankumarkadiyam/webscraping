@@ -1,6 +1,7 @@
 import requests
 import json
 import pandas as pd
+import targetdotcomhelper
 cookies = {
     'x-digital-context': 'eNpFkF1LwzAYhf9KeK82KG262q95tQ-rsA1FHRNESuyyGZomocnmpvjffVtFyVWenJPDOZ9g9aGtOIzBsXbPnV_pBjyo3phSXCLeXE3xzowpj7y1QitkoU99inTLj6L3brmtnTaIhCqt0y3CHZOWe6BtuWONkGeULYU6nKBn_5-tVa30u0J8FFagtxRbxDTMi5TO85gWOR1RmiXZJKJXRTadTdKEFqg_WN6WbM-VQ_1KfwgpWRD7lAyewvCS9GnklCVlcjEkE2Mk3_DXhXBBHKV-lJDB4uZxtfSIFDUn17yq9ZDM3lrd8CCMqd8f8sB2rBW_Fgw1GAjjT5zrpJVuulqmxy1ruMNWMH6GPB6FNIsiePHAnU030d397Xw9e-wm6uoFJvgTfXnQnH9m67uP0iT14EOYstJb9MYJpYkHkmHPcOTn-Ci12sM4Tf009sA65rqIxQS-vgFzN4ph',
     'accessToken': 'eyJraWQiOiJlYXMyIiwiYWxnIjoiUlMyNTYifQ.eyJzdWIiOiI5ZTg3ZjliZS1mY2Q2LTQ0ZGYtYWI5Zi1hYWVjMjg0YmIxZWIiLCJpc3MiOiJNSTYiLCJleHAiOjE3ODQzOTExMTgsImlhdCI6MTc4NDMwNDcxOCwianRpIjoiVEdULjNjZDk5OTk1YmM5NDRhNDQ5YmQ3YTFmZTQ2MjNiOTFlLWwiLCJza3kiOiJlYXMyIiwic3V0IjoiRyIsImRpZCI6IjA1ZTdmMWZjZjdhZDA4MTY0ZTg5MjUwYjA5ZmUyY2I5MTg4ZTE4YjhkMWQyMThiYjJhOTZmMjkyODQzMjQ0Y2MiLCJzY28iOiJlY29tLm5vbmUsb3BlbmlkIiwiY2xpIjoiZWNvbS13ZWItMS4wLjAiLCJhc2wiOiJMIn0.iqEP_r3a4m-fc7d9QPGO87Mbd0vU2ZI8uH-FYt-_ZB3XTJQJW7BIh_H4v3U17k_wOd_q2CPXoz5wZm4a50rgNjMqzc7V55JbETC0GFJYKEoHqwriC3nPsAA-Pm1VbL-au6GVED0sjtlvuMn4ZQwPv2fXjO2xEB-_KVaIWtKoc37r3SEALbobSt2g-Ed318sTMwjBxbPXvqFbMbO6Wu2ZKz0sSfBzEQqQxg42ckU2vOkhwhxKIq5akl6iMNMQg6IRjARurZ6gG_3oUei2U0s2IMVIsPc8MBB2U3b5eos--_4_49z3gHSFi7p53_SqCDsr4rFYlc5L_6WfAH4RmeF-Rw',
@@ -102,48 +103,30 @@ product_variants_result=[]
 if response.status_code == 200:
     json_response = response.json()
     zones = json_response.get('layout',{}).get('zones',[])
-    for zone in zones:
-        if zone.get('zone_id') == 'ProductDetailAboveTheFoldRight':
-            modulesGroups = zone.get('module_groups',[])
-            for moduleGroup in modulesGroups:
-                if moduleGroup.get('module_group_id') == 'ProductDetailAboveTheFoldRight':
-                    for module in moduleGroup.get('modules',[]):
-                        if module.get('module_type') == 'ProductDetailTitle':
-                            module_data = module.get('module_data',{}).get('data_by_tcin',[])
-                            for product in module_data:
-                                product_titles_map[product.get('tcin')] = product.get('title')
-                            break
-                    break
-            break
-
-
-    data_source_modules = json_response.get('data_source_modules')
-    product_detail_web_datasource_with_store = []
-    product_detail_web_datasourcefulfillment_and_variations=[]
-    if data_source_modules:
-        for module in data_source_modules:
-            if module.get('module_type') == 'ProductDetailWebDatasourceWithStore':
-                product_detail_web_datasource_with_store = module.get('module_data',{}).get('data',{}).get('product',{}).get('children',[])
-            if module.get('module_type') == 'ProductDetailWebDatasourceFulfillmentAndVariations':
-                product_detail_web_datasourcefulfillment_and_variations = module.get('module_data',{}).get('data',{}).get('product',{}).get('variation_hierarchy',[])
-        if product_detail_web_datasourcefulfillment_and_variations:
-            for product in product_detail_web_datasource_with_store:
-                product_price_map[product.get('tcin')] = product.get('price',{}).get('current_retail')
-            for variant in product_detail_web_datasourcefulfillment_and_variations:
-                color = variant.get('value')
-                product_variants_result.extend([
-                    {
-                        'Id':product.get('tcin'),
-                        'Title': product_titles_map.get(product.get('tcin'),'Title Not Found'),
-                        'Color': color,
-                        'Size': product.get('value'),
-                        'Price': product_price_map.get(product.get('tcin'),'Price Not Found'),
-                        'Buying URL':product.get('buy_url'),
-                        'primary_image_url':product.get('primary_image_url')
-                    }
-                    for product in variant.get('variation_hierarchy')
-                ])
-
+    product_titles_map = {}
+    if zones:
+        zone = targetdotcomhelper.get_zone(zones=zones,zone_id='ProductDetailAboveTheFoldRight')
+        if zone:
+            module_group = targetdotcomhelper.get_module_group(zone=zone,module_group_id='ProductDetailAboveTheFoldRight')
+            if module_group:
+                module = targetdotcomhelper.get_module(module_group=module_group,module_type='ProductDetailTitle')
+                if module:
+                    product_titles_map = targetdotcomhelper.get_product_titles(module=module)
+    
+    if product_titles_map:           
+        data_source_modules = json_response.get('data_source_modules')
+        product_detail_web_datasource_with_store = []
+        product_detail_web_datasourcefulfillment_and_variations=[]
+        if data_source_modules:
+            module_web_store = targetdotcomhelper.get_data_source_module(data_source_modules=data_source_modules,module_type='ProductDetailWebDatasourceWithStore')
+            module_with_variants = targetdotcomhelper.get_data_source_module(data_source_modules=data_source_modules,module_type='ProductDetailWebDatasourceFulfillmentAndVariations')
+            if module_web_store:
+                product_detail_web_datasource_with_store = module_web_store.get('module_data',{}).get('data',{}).get('product',{}).get('children',[])
+                product_price_map =  targetdotcomhelper.get_product_prices(product_detail_web_datasource_with_store)
+            if module_with_variants:
+                product_detail_web_datasourcefulfillment_and_variations = module_with_variants.get('module_data',{}).get('data',{}).get('product',{}).get('variation_hierarchy',[])
+                product_variants_result=targetdotcomhelper.get_final_product_set(product_detail_web_datasourcefulfillment_and_variations=product_detail_web_datasourcefulfillment_and_variations,product_titles_map=product_titles_map,product_price_map=product_price_map)
+                
 print(len(product_titles_map))
 print(len(product_price_map))
 print(len(product_variants_result))
