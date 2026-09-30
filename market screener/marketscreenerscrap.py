@@ -22,10 +22,13 @@ def parse_postings_from_html(html_content, initial_date=None):
         if len(tds) < 3:
             continue
             
-        # Company name and profile link
-        company_elem = tr.select_one('td div span a') or tr.select_one('a')
-        company_name = company_elem.text.strip() if company_elem else 'Unknown'
-        company_url = company_elem.get('href', '') if company_elem else ''
+        # Filter out non-company rows (like table control header)
+        company_elem = tr.select_one('td a[href*="/kurs/"]') or tr.select_one('td div span a')
+        if not company_elem:
+            continue
+            
+        company_name = company_elem.text.strip()
+        company_url = company_elem.get('href', '')
         if company_url and company_url.startswith('/'):
             company_url = f"https://se.marketscreener.com{company_url}"
             
@@ -46,67 +49,129 @@ def parse_postings_from_html(html_content, initial_date=None):
     return postings
 
 
-def scrape_calendar(cf_config=None, target_date=None, max_pages=5):
+# Static obfuscated field identifiers compiled into MarketScreener's frontend JS (prod-*.min.js):
+# These represent the 'startDate' and 'endDate' inputs of the date range picker.
+DATE_FILTER_START_KEY = 'ZjBKQkREL20yZXJmSVBMRFIxNDc2UT09'
+DATE_FILTER_END_KEY = 'KzE1UXROTG5rYmhXUFFtZDlkZGhVZz09'
+
+
+def scrape_calendar(target_date="tomorrow", max_pages=10):
     """
-    Fetch the financial calendar, extract postings, and handle pagination via /more.
-    """
-    session = requests.Session(impersonate='chrome120')
+    Fetch financial calendar postings for a specific date (default: tomorrow).
     
-    if cf_config:
-        url = f"https://se.marketscreener.com/bors/kalender/finansiell/?cf={cf_config}"
-    else:
-        url = "https://se.marketscreener.com/bors/kalender/finansiell/"
-        
+    1. Initializes session with PHPSESSID cookie via handshake.
+    2. Requests base calendar page to extract table attributes and CSRF token.
+    3. Calls /async/agenda-screener/query to dynamically generate the 'cf' token
+       and retrieve initial postings for the requested target date.
+    4. Calls /async/agenda-screener/more to handle pagination with the dynamic 'cf'.
+    """
+    # Resolve target_date
+    if target_date == "tomorrow":
+        target_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    elif target_date == "today":
+        target_date = datetime.now().strftime('%Y-%m-%d')
+
+    session = requests.Session(impersonate='chrome120')
+    base_url = "https://se.marketscreener.com/bors/kalender/finansiell/"
+    
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
         'referer': 'https://se.marketscreener.com/',
     }
     
-    # 1. Warm-up request to establish session cookie (PHPSESSID).
-    # MarketScreener's backend requires an active PHPSESSID before rendering
-    # the page so the CSRF token in #event-screener-csrf-token is properly
-    # bound to the session in $_SESSION for subsequent /more AJAX POST calls.
+    # 1. Warm-up request to establish session cookie (PHPSESSID)
     print("Initializing session handshake...")
     session.get('https://se.marketscreener.com/', headers=headers)
     
-    # 2. Fetch the calendar page with the established session
-    print(f"Fetching calendar from MarketScreener...")
-    response = session.get(url, headers=headers)
-    print(f"Initial Page Status: {response.status_code}")
+    # 2. Fetch base calendar page to obtain CSRF token and base configuration
+    print(f"Fetching base calendar page from MarketScreener...")
+    response = session.get(base_url, headers=headers)
+    print(f"Base Page Status: {response.status_code}")
     
     if response.status_code != 200:
-        print("Failed to retrieve calendar.")
+        print("Failed to retrieve calendar base page.")
         return []
         
     soup = BeautifulSoup(response.text, 'lxml')
     table = soup.select_one('#eventScreener')
-    
-    # Extract metadata for pagination
-    configuration = table.get('data-configuration') if table else cf_config
-    parameters = table.get('data-parameters') if table else None
+    if not table:
+        print("Could not find #eventScreener table.")
+        return []
+
+    configuration = table.get('data-configuration')
+    parameters = table.get('data-parameters')
+    default_config = table.get('data-default-config')
     csrf_elem = soup.select_one('#event-screener-csrf-token')
-    token = csrf_elem.text.strip() if csrf_elem else (table.get('data-token') if table else None)
+    token = csrf_elem.text.strip() if csrf_elem else table.get('data-token')
     
-    # Parse initial postings
-    all_postings = parse_postings_from_html(response.text)
-    print(f"Loaded {len(all_postings)} postings from initial page.")
-    
-    # Identify lastDate from the last date header on the initial page
-    stickies = soup.select('#eventScreener .sticky-second')
-    last_date = stickies[-1].get('data-date') if stickies else None
-    
-    # Handle Pagination (via /async/agenda-screener/more)
-    page = 1
     ajax_headers = {
         'accept': '*/*',
         'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'origin': 'https://se.marketscreener.com',
-        'referer': url,
+        'referer': base_url,
         'x-requested-with': 'XMLHttpRequest',
     }
-    
-    while page <= max_pages:
+
+    all_postings = []
+    last_date = target_date
+
+    # 3. Call /async/agenda-screener/query to dynamically get the 'cf' token for target_date
+    if target_date:
+        print(f"Querying calendar specifically for target date: {target_date}...")
+        data_query = {
+            'configuration': configuration,
+            'parameters': parameters,
+            'defaultConfig': default_config,
+            'token': token,
+            f'altered[{DATE_FILTER_START_KEY}]': target_date,
+            f'altered[{DATE_FILTER_END_KEY}]': target_date,
+        }
+        
+        resp_query = session.post(
+            'https://se.marketscreener.com/async/agenda-screener/query',
+            data=data_query,
+            headers=ajax_headers
+        )
+        
+        if resp_query.status_code == 200:
+            res_json = resp_query.json()
+            if res_json.get('error'):
+                print(f"Query error: {res_json.get('message')}")
+                return []
+                
+            # Dynamic cf token generated by server for this date
+            dynamic_cf = res_json.get('cf')
+            if dynamic_cf:
+                configuration = dynamic_cf
+                print(f"Received dynamic 'cf' token from /query.")
+                
+            total_expected = res_json.get('nbResults', 0)
+            print(f"Total postings scheduled for {target_date}: {total_expected}")
+            
+            html_query = res_json.get('html', '')
+            initial_postings = parse_postings_from_html(f"<table><tbody>{html_query}</tbody></table>", initial_date=target_date)
+            all_postings.extend(initial_postings)
+            print(f"Loaded {len(initial_postings)} initial postings from /query.")
+            
+            # Identify lastDate from query response
+            soup_query = BeautifulSoup(f"<table><tbody>{html_query}</tbody></table>", 'lxml')
+            stickies = soup_query.select('.sticky-second')
+            if stickies:
+                last_date = stickies[-1].get('data-date') or target_date
+        else:
+            print(f"/query failed with status {resp_query.status_code}")
+            return []
+    else:
+        # Default calendar view without specific date filtering
+        all_postings = parse_postings_from_html(response.text)
+        stickies = soup.select('#eventScreener .sticky-second')
+        last_date = stickies[-1].get('data-date') if stickies else None
+        total_expected = 999999
+
+    # 4. Handle Pagination via /async/agenda-screener/more using the dynamic 'cf'
+    page = 1
+    while len(all_postings) < total_expected and page <= max_pages:
         data_more = {
             'configuration': configuration,
             'parameters': parameters,
@@ -132,12 +197,10 @@ def scrape_calendar(cf_config=None, target_date=None, max_pages=5):
                 current_results = res_json.get('current_results', len(html_more))
                 
                 if current_results == 0 or not html_more.strip():
-                    print("Reached end of results.")
                     break
                     
                 new_postings = parse_postings_from_html(f"<table><tbody>{html_more}</tbody></table>", initial_date=last_date)
                 if not new_postings:
-                    print("No more postings parsed.")
                     break
                     
                 print(f"Page {page}: Loaded {len(new_postings)} additional postings.")
@@ -149,11 +212,6 @@ def scrape_calendar(cf_config=None, target_date=None, max_pages=5):
                 if more_stickies:
                     last_date = more_stickies[-1].get('data-date')
                     
-                # If target_date is set and we've already loaded past it, stop paginating
-                if target_date and last_date and last_date > target_date:
-                    print(f"Reached beyond target date ({target_date}). Stopping pagination.")
-                    break
-                    
                 page += 1
             except Exception as e:
                 print(f"Error parsing page {page}: {e}")
@@ -162,20 +220,12 @@ def scrape_calendar(cf_config=None, target_date=None, max_pages=5):
             print(f"Page {page} failed with status {resp_more.status_code}: {resp_more.text[:150]}")
             break
 
-    # Filter for target date if specified
-    if target_date:
-        filtered = [p for p in all_postings if p['date'] == target_date]
-        return filtered
-        
     return all_postings
 
 
 if __name__ == '__main__':
-    # Configuration string from MarketScreener for the financial calendar view
-    cf = 'OWd3ZEJRQUh3cE9sMzBQekpXVTNQRVBGTVdmRytnVzU1ekRUeGNvb1N2R0NnMXZEbTdpOWRKLzVpZHZxTXpXNHdDTyt5ekRFY3dtNFI1akI2VXZzajFUQ043VGV5bHovR3lpV0hUNm5xcEhweDVWOSs3cEFya0JCc1VTRkpHZW4'
-    
-    # Scrape with pagination support
-    postings = scrape_calendar(cf_config=cf)
+    # Automatically queries tomorrow's date dynamically (or pass target_date='YYYY-MM-DD')
+    postings = scrape_calendar(target_date="tomorrow")
     
     print(f"\n=======================================================")
     print(f" TOTAL POSTINGS SCRAPED: {len(postings)}")
